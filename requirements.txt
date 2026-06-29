@@ -2,4 +2,6 @@ streamlit
 pandas
 requests
 beautifulsoup4
+selenium
+webdriver-manager
 # selenium  # uncomment if using browser automation
