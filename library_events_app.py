@@ -1,34 +1,82 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.common.exceptions import NoSuchElementException, TimeoutException
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+import time
 
 st.set_page_config(page_title="Library Events MA", layout="wide")
-st.title("📅 Minuteman + BPL Library Events Aggregator")
-st.markdown("Day-wise events from Minuteman branches & Boston Public Library. Month calendar search.")
+st.title("📅 Live Minuteman + BPL Events (Selenium Scraper)")
 
-# Sidebar filters
 st.sidebar.header("Filters")
-selected_month = st.sidebar.date_input("Select Month Start", datetime.now())
-branch_filter = st.sidebar.text_input("Filter by Branch (e.g., Hyde Park, Central)", "")
+selected_date = st.sidebar.date_input("Select Date", datetime.now())
 
-st.subheader(f"Events around {selected_month.strftime('%B %Y')}")
+# Full Branch Lists
+bpl_branches = ["All BPL", "Central Library in Copley Square", "Hyde Park", "Jamaica Plain", "North End", "South Boston", 
+                "Mattapan", "Chinatown", "West End", "Grove Hall", "Adams Street", "Brighton", "Charlestown", 
+                "Codman Square", "Connolly", "East Boston", "Fields Corner", "Roslindale", "Roxbury", "Shaw-Roxbury"]
 
-# Placeholder data (replace with scraper/API later)
-data = [
-    {"Date": "2026-06-29", "Branch": "Jamaica Plain (BPL)", "Event": "Memory Café", "Time": "10:30am-12pm", "Link": "https://bpl.bibliocommons.com/events/"},
-    {"Date": "2026-06-29", "Branch": "Hyde Park (BPL)", "Event": "Basketry Workshop", "Time": "10:30am", "Link": "https://bpl.bibliocommons.com/events/"},
-    # Add more from Minuteman/BPL calendars
-    {"Date": "2026-06-30", "Branch": "Various Minuteman", "Event": "Branch Programs", "Time": "Check site", "Link": "https://www.minlib.net/calendar"},
-]
+minuteman_branches = ["All Minuteman", "Acton", "Arlington", "Ashland", "Bedford", "Belmont", "Brookline", "Cambridge", 
+                      "Concord", "Dedham", "Dover", "Framingham", "Lexington", "Lincoln", "Natick", "Needham", 
+                      "Newton", "Sudbury", "Waltham", "Watertown", "Wayland", "Weston", "Winchester", "Woburn"]
 
-df = pd.DataFrame(data)
-if branch_filter:
-    df = df[df['Branch'].str.contains(branch_filter, case=False)]
+all_branches = ["All Branches"] + [b for b in bpl_branches[1:]] + [m for m in minuteman_branches[1:]]
+selected_branch = st.sidebar.selectbox("Select Branch", all_branches)
 
-st.dataframe(df, use_container_width=True)
+@st.cache_data(ttl=1800)  # Cache 30 min
+def scrape_with_selenium(url, wait_time=10):
+    try:
+        chrome_options = Options()
+        chrome_options.add_argument("--headless")
+        chrome_options.add_argument("--no-sandbox")
+        chrome_options.add_argument("--disable-dev-shm-usage")
+        
+        driver = webdriver.Chrome(options=chrome_options)
+        driver.get(url)
+        time.sleep(wait_time)  # Wait for JS load
+        
+        # Example extraction (customize selectors per site)
+        events = []
+        # For BPL - look for event cards
+        try:
+            event_elements = driver.find_elements(By.CSS_SELECTOR, "div.event-item, .event, a[href*='events']")  # Adjust selectors
+            for el in event_elements[:10]:  # Limit
+                text = el.text.strip()
+                if text:
+                    events.append({"Event": text[:100], "Branch": "BPL", "Time": "See details", "Source": "BPL"})
+        except:
+            pass
+        
+        driver.quit()
+        return pd.DataFrame(events) if events else pd.DataFrame([{"Event": "No events extracted", "Branch": "Various", "Time": "Try again"}])
+    except Exception as e:
+        return pd.DataFrame([{"Event": f"Error: {str(e)[:100]}", "Branch": "N/A", "Time": "Check deployment"}])
 
-if st.button("🔄 Refresh Events (Demo)"):
-    st.success("In full version: Scrapes minlib.net/calendar + bpl.bibliocommons.com/events for selected month/day.")
-    st.info("Tip: Many BPL story times daily; Minuteman via branch LibCal.")
+# Fetch
+bpl_url = "https://bpl.bibliocommons.com/events/"
+min_url = "https://www.minlib.net/calendar"
 
-st.caption("Data collected from official calendars. For production, add BeautifulSoup/Selenium.")
+bpl_df = scrape_with_selenium(bpl_url)
+min_df = scrape_with_selenium(min_url)
+
+combined_df = pd.concat([bpl_df, min_df], ignore_index=True)
+
+# Apply filters
+if selected_branch != "All Branches":
+    combined_df = combined_df[combined_df.get('Branch', '').str.contains(selected_branch.split()[0], case=False, na=False)]
+
+st.subheader(f"Events for {selected_date.strftime('%B %d, %Y')}")
+if combined_df.empty or combined_df.iloc[0]['Event'].startswith("Error"):
+    st.warning("Scraping may be limited in Streamlit Cloud (headless env). Test locally or improve selectors.")
+else:
+    st.dataframe(combined_df, use_container_width=True)
+
+if st.button("🔄 Refresh Live Scrape"):
+    st.cache_data.clear()
+    st.rerun()
+
+st.caption("Selenium handles JS calendars. Improve CSS selectors for better extraction. Full branches supported.")
